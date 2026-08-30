@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/warp/Documents/GitHub/spacewc/build-cmake/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

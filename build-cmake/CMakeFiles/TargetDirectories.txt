@@ -1,0 +1,4 @@
+/home/warp/Documents/GitHub/spacewc/build-cmake/CMakeFiles/spacewc-comp.dir
+/home/warp/Documents/GitHub/spacewc/build-cmake/CMakeFiles/spacewc.dir
+/home/warp/Documents/GitHub/spacewc/build-cmake/CMakeFiles/edit_cache.dir
+/home/warp/Documents/GitHub/spacewc/build-cmake/CMakeFiles/rebuild_cache.dir

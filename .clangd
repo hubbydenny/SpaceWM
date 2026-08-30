@@ -1,0 +1,14 @@
+CompileFlags:
+  Add:
+    - -std=c++20
+    - -DWLR_USE_UNSTABLE
+    - -I/home/warp/Documents/GitHub/spacewc/src
+    - -I/usr/include/wlroots-0.20
+    - -I/usr/include/pixman-1
+    - -I/usr/include/libdrm
+    - -fpermissive
+  Remove:
+    - -Winvalid-pch
+
+Index:
+  Background: Build

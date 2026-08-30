@@ -1,0 +1,1 @@
+/usr/bin/c++  -fpermissive -Wno-invalid-offsetof -Wl,--dependency-file=CMakeFiles/spacewc.dir/link.d CMakeFiles/spacewc.dir/src/main_client.cpp.o CMakeFiles/spacewc.dir/src/WaylandClient.cpp.o -o spacewc   -L/usr/lib/wlroots  -Wl,-rpath,/usr/lib/wlroots -lwayland-client -lxkbcommon -lpthread -ldl
