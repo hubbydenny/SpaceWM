@@ -10,12 +10,11 @@
 #include <iomanip>
 
 enum class LogLevel { 
-  Info, Warn, Error 
+  Info, Warn, Error, Debug 
 };
 
 class Config {
 public:
-  std::string debug = "[DEBUG]";
     void addBinding(const std::string& key, const std::function<void()>& action) {
         single[key] = action;
     }
@@ -58,6 +57,7 @@ public:
         switch (level) {
             case LogLevel::Warn:  lvl = "WARN"; break;
             case LogLevel::Error: lvl = "ERROR"; break;
+            case LogLevel::Debug: lvl = "DEBUG"; break; 
             default: break;
         }
         auto now = std::chrono::system_clock::now();

@@ -1,6 +1,12 @@
 #include <wayland-client.h>
 #include <wayland-client-protocol.h>
+
+#include <wayland-server-core.h>
+#include <wayland-server-protocol.h>
+
 #include "xdg-shell-client-protocol.h"
+#include <xkbcommon/xkbcommon.h>
+
 #include <iostream>
 #include <cstring>
 #include <unistd.h>
@@ -8,7 +14,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include "config.hpp"
-#include <xkbcommon/xkbcommon.h>
 
 class WaylandClient {
 public:

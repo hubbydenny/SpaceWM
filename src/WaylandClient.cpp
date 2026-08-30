@@ -1,5 +1,7 @@
 #include "WaylandClient.hpp"
 #include <xkbcommon/xkbcommon.h>
+
+#include <iostream>
 #include <cstdlib>
 
 WaylandClient::WaylandClient() {}
