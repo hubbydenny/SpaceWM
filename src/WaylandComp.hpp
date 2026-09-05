@@ -85,6 +85,7 @@ struct Cursor {
     wl_listener         button{};
     wl_listener         axis{};
     wl_listener         frame{};
+    wl_listener         request_set_cursor{};
     View*               view_under = nullptr;
 };
 
@@ -152,6 +153,7 @@ private:
     void onInput(wlr_input_device* dev);
     void onToplevel(wlr_xdg_toplevel* t);
     void setFocusedView(View*);
+    void processCursorMotion(uint32_t time_msec);
     static void cbOutput(wl_listener*, void*);
     static void cbInput(wl_listener*, void*);
     static void cbToplevel(wl_listener*, void*);

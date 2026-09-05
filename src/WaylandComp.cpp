@@ -77,7 +77,7 @@ bool Compositor::init() {
     scene_ = wlr_scene_create();
     if (!scene_) { std::cerr << "[comp] wlr_scene_create failed\n"; return false; }
 
-    background_ = wlr_scene_rect_create(&scene_->tree, 0, 0, (float[4]){0.05f, 0.05f, 0.08f, 1.0f});
+    background_ = wlr_scene_rect_create(&scene_->tree, 0, 0, (float[4]){0.15f, 0.15f, 0.15f, 1.0f});
 
     sol_ = wlr_scene_attach_output_layout(scene_, output_layout_);
     if (!sol_) { std::cerr << "[comp] wlr_scene_attach_output_layout failed\n"; return false; }
@@ -95,6 +95,8 @@ bool Compositor::init() {
     if (!seat_) { std::cerr << "[comp] wlr_seat_create failed\n"; return false; }
     wlr_seat_set_capabilities(seat_,
         WL_SEAT_CAPABILITY_KEYBOARD | WL_SEAT_CAPABILITY_POINTER);
+
+    cursorInit();
 
     new_output_.notify  = cbOutput;
     new_input_.notify   = cbInput;
@@ -150,6 +152,7 @@ View* Compositor::viewCreate(wlr_xdg_toplevel* t, wlr_scene_tree* parent) {
 
     if (wconf::get().border.enabled) {
         view->border_tree = wlr_scene_tree_create(parent);
+        view->border_tree->node.data = view;
         int B = wconf::get().border.width;
         float col[4] = {0.2f, 0.2f, 0.2f, 1.0f};
         view->border_top    = wlr_scene_rect_create(view->border_tree, 1, B, col);
@@ -172,6 +175,9 @@ void Compositor::viewDestroy(View* view) {
     views_.erase(view->toplevel);
     wl_list_remove(&view->commit.link);
     wl_list_remove(&view->destroy.link);
+    wl_list_remove(&view->request_move.link);
+    wl_list_remove(&view->request_resize.link);
+    wl_list_remove(&view->request_fullscreen.link);
     if (view->border_tree) wlr_scene_node_destroy(&view->border_tree->node);
     delete view;
 }
@@ -200,8 +206,8 @@ static void updateViewBorders(View* view) {
 
     wlr_scene_rect_set_size(view->border_top,    W + B * 2, B);
     wlr_scene_rect_set_size(view->border_bottom, W + B * 2, B);
-    wlr_scene_rect_set_size(view->border_left,   B, H + B * 2);
-    wlr_scene_rect_set_size(view->border_right,  B, H + B * 2);
+    wlr_scene_rect_set_size(view->border_left,   B, H);
+    wlr_scene_rect_set_size(view->border_right,  B, H);
 
     int vx = view->tree->node.x;
     int vy = view->tree->node.y;
@@ -212,7 +218,6 @@ static void updateViewBorders(View* view) {
     wlr_scene_node_set_position(&view->border_left->node,   0,      B);
     wlr_scene_node_set_position(&view->border_right->node,  W + B,  B);
 }
-
 void Compositor::setFocusedView(View* view) {
     if (focused_view_ == view) return;
     if (focused_view_) {
@@ -240,14 +245,68 @@ View* Compositor::viewAt(int x, int y) {
     return nullptr;
 }
 
+void Compositor::processCursorMotion(uint32_t time_msec) {
+    if (!cursor_ || !cursor_->cursor) return;
+
+    auto* view = viewAt((int)cursor_->cursor->x, (int)cursor_->cursor->y);
+    if (view && view->grab == View::Grab::Move) {
+        int dx = (int)cursor_->cursor->x - view->move.click_x;
+        int dy = (int)cursor_->cursor->y - view->move.click_y;
+        wlr_scene_node_set_position(&view->tree->node,
+            view->move.win_x + dx, view->move.win_y + dy);
+        updateViewBorders(view);
+        return;
+    }
+    if (view && view->grab == View::Grab::Resize) {
+        int dx = (int)cursor_->cursor->x - view->resize.click_x;
+        int dy = (int)cursor_->cursor->y - view->resize.click_y;
+        int new_w = view->resize.win_w;
+        int new_h = view->resize.win_h;
+        if (view->resize.edges & WLR_EDGE_RIGHT)  new_w += dx;
+        if (view->resize.edges & WLR_EDGE_LEFT)   new_w -= dx;
+        if (view->resize.edges & WLR_EDGE_BOTTOM) new_h += dy;
+        if (view->resize.edges & WLR_EDGE_TOP)    { new_h -= dy; }
+        new_w = std::max(50, new_w);
+        new_h = std::max(50, new_h);
+        wlr_xdg_toplevel_set_size(view->toplevel, new_w, new_h);
+        return;
+    }
+
+    double sx = 0, sy = 0;
+    wlr_scene_node* node = wlr_scene_node_at(&scene_->tree.node,
+        cursor_->cursor->x, cursor_->cursor->y, &sx, &sy);
+
+    wlr_surface* surface = nullptr;
+    if (node && node->type == WLR_SCENE_NODE_BUFFER) {
+        auto* scene_buffer = wlr_scene_buffer_from_node(node);
+        auto* scene_surface = wlr_scene_surface_try_from_buffer(scene_buffer);
+        if (scene_surface) {
+            surface = scene_surface->surface;
+        }
+    }
+
+    if (surface) {
+        wlr_seat_pointer_notify_enter(seat_, surface, sx, sy);
+        wlr_seat_pointer_notify_motion(seat_, time_msec, sx, sy);
+    } else {
+        if (cursor_->xcursor) {
+            wlr_cursor_set_xcursor(cursor_->cursor, cursor_->xcursor, "left_ptr");
+        }
+        wlr_seat_pointer_clear_focus(seat_);
+    }
+}
+
 void Compositor::cursorInit() {
     cursor_ = new Cursor;
     cursor_->comp = this;
-    cursor_->cursor = wlr_cursor_create(); //wlroots cursor creation
+    cursor_->cursor = wlr_cursor_create();
     if (!cursor_->cursor) { std::cerr << "[comp] wlr_cursor_create failed\n"; delete cursor_; cursor_ = nullptr; return; }
     wlr_cursor_attach_output_layout(cursor_->cursor, output_layout_);
     cursor_->xcursor = wlr_xcursor_manager_create(nullptr, 24);
-    if (cursor_->xcursor) wlr_xcursor_manager_load(cursor_->xcursor, 1.0f);
+    if (cursor_->xcursor) {
+        wlr_xcursor_manager_load(cursor_->xcursor, 1.0f);
+        wlr_cursor_set_xcursor(cursor_->cursor, cursor_->xcursor, "left_ptr");
+    }
 
     cursor_->motion.notify = [](wl_listener* l, void* data) {
         auto* cur = reinterpret_cast<Cursor*>(
@@ -255,37 +314,7 @@ void Compositor::cursorInit() {
         auto* ev = static_cast<wlr_pointer_motion_event*>(data);
         wlr_cursor_move(cur->cursor, ev->pointer ? &ev->pointer->base : nullptr,
             ev->delta_x, ev->delta_y);
-
-        auto* view = cur->comp->viewAt((int)cur->cursor->x, (int)cur->cursor->y);
-        if (view && view->grab == View::Grab::Move) {
-            int dx = (int)cur->cursor->x - view->move.click_x;
-            int dy = (int)cur->cursor->y - view->move.click_y;
-            wlr_scene_node_set_position(&view->tree->node,
-                view->move.win_x + dx, view->move.win_y + dy);
-            updateViewBorders(view);
-            return;
-        }
-        if (view && view->grab == View::Grab::Resize) {
-            int dx = (int)cur->cursor->x - view->resize.click_x;
-            int dy = (int)cur->cursor->y - view->resize.click_y;
-            int new_w = view->resize.win_w;
-            int new_h = view->resize.win_h;
-            int new_x = view->resize.orig_x;
-            int new_y = view->resize.orig_y;
-            if (view->resize.edges & WLR_EDGE_RIGHT)  new_w += dx;
-            if (view->resize.edges & WLR_EDGE_LEFT)  { new_w -= dx; new_x += dx; }
-            if (view->resize.edges & WLR_EDGE_BOTTOM) new_h += dy;
-            if (view->resize.edges & WLR_EDGE_TOP)    { new_h -= dy; new_y += dy; }
-            new_w = std::max(1, new_w);
-            new_h = std::max(1, new_h);
-            wlr_xdg_toplevel_set_size(view->toplevel, new_w, new_h);
-            wlr_scene_node_set_position(&view->tree->node, new_x, new_y);
-            updateViewBorders(view);
-            return;
-        }
-
-        wlr_seat_pointer_notify_motion(cur->comp->seat_, ev->time_msec,
-            cur->cursor->x, cur->cursor->y);
+        cur->comp->processCursorMotion(ev->time_msec);
     };
     wl_signal_add(&cursor_->cursor->events.motion, &cursor_->motion);
 
@@ -294,8 +323,7 @@ void Compositor::cursorInit() {
             reinterpret_cast<char*>(l) - offsetof(Cursor, motion_absolute));
         auto* ev = static_cast<wlr_pointer_motion_absolute_event*>(data);
         wlr_cursor_warp_absolute(cur->cursor, &ev->pointer->base, ev->x, ev->y);
-        wlr_seat_pointer_notify_motion(cur->comp->seat_, ev->time_msec,
-            cur->cursor->x, cur->cursor->y);
+        cur->comp->processCursorMotion(ev->time_msec);
     };
     wl_signal_add(&cursor_->cursor->events.motion_absolute, &cursor_->motion_absolute);
 
@@ -318,21 +346,17 @@ void Compositor::cursorInit() {
                 int B = wconf::get().border.width;
                 int TITLE_H = 30;
 
-                if (my >= vy && my <= vy + TITLE_H) {
-                    view->grab = View::Grab::Move;
-                    view->move.click_x = mx;
-                    view->move.click_y = my;
-                    view->move.win_x = vx;
-                    view->move.win_y = vy;
-                } else if (
-                    (mx <= vx + B || mx >= vx + W - B) ||
-                    (my <= vy + B || my >= vy + H - B)
-                ) {
+                bool near_left   = (mx >= vx - B && mx <= vx + 8);
+                bool near_right  = (mx >= vx + W - 8 && mx <= vx + W + B);
+                bool near_top    = (my >= vy - B && my <= vy + 8);
+                bool near_bottom = (my >= vy + H - 8 && my <= vy + H + B);
+
+                if (near_left || near_right || near_top || near_bottom) {
                     uint32_t edges = 0;
-                    if (mx <= vx + B) edges |= WLR_EDGE_LEFT;
-                    if (mx >= vx + W - B) edges |= WLR_EDGE_RIGHT;
-                    if (my <= vy + B) edges |= WLR_EDGE_TOP;
-                    if (my >= vy + H - B) edges |= WLR_EDGE_BOTTOM;
+                    if (near_left)   edges |= WLR_EDGE_LEFT;
+                    if (near_right)  edges |= WLR_EDGE_RIGHT;
+                    if (near_top)    edges |= WLR_EDGE_TOP;
+                    if (near_bottom) edges |= WLR_EDGE_BOTTOM;
                     view->grab = View::Grab::Resize;
                     view->resize.click_x = mx;
                     view->resize.click_y = my;
@@ -341,6 +365,12 @@ void Compositor::cursorInit() {
                     view->resize.win_w = W;
                     view->resize.win_h = H;
                     view->resize.edges = edges;
+                } else if (my >= vy && my <= vy + TITLE_H) {
+                    view->grab = View::Grab::Move;
+                    view->move.click_x = mx;
+                    view->move.click_y = my;
+                    view->move.win_x = vx;
+                    view->move.win_y = vy;
                 }
             }
         }
@@ -356,6 +386,10 @@ void Compositor::cursorInit() {
     cursor_->axis.notify = [](wl_listener* l, void* data) {
         auto* cur = reinterpret_cast<Cursor*>(
             reinterpret_cast<char*>(l) - offsetof(Cursor, axis));
+        auto* ev = static_cast<wlr_pointer_axis_event*>(data);
+        wlr_seat_pointer_notify_axis(cur->comp->seat_,
+            ev->time_msec, ev->orientation, ev->delta,
+            ev->delta_discrete, ev->source, ev->relative_direction);
     };
     wl_signal_add(&cursor_->cursor->events.axis, &cursor_->axis);
 
@@ -365,6 +399,17 @@ void Compositor::cursorInit() {
         wlr_seat_pointer_notify_frame(cur->comp->seat_);
     };
     wl_signal_add(&cursor_->cursor->events.frame, &cursor_->frame);
+
+    cursor_->request_set_cursor.notify = [](wl_listener* l, void* data) {
+        auto* cur = reinterpret_cast<Cursor*>(
+            reinterpret_cast<char*>(l) - offsetof(Cursor, request_set_cursor));
+        auto* ev = static_cast<wlr_seat_pointer_request_set_cursor_event*>(data);
+        auto* focused_client = cur->comp->seat_->pointer_state.focused_client;
+        if (focused_client == ev->seat_client) {
+            wlr_cursor_set_surface(cur->cursor, ev->surface, ev->hotspot_x, ev->hotspot_y);
+        }
+    };
+    wl_signal_add(&seat_->events.request_set_cursor, &cursor_->request_set_cursor);
 
     std::cout << "[comp] cursor ready\n";
 }
@@ -403,23 +448,28 @@ void Compositor::toggleFullscreen(View* view) {
     }
 }
 
-static void spawn_async(const char* cmd) {
+static void spawn_async(const char* cmd, const std::string& sock) {
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
+        if (!sock.empty()) {
+            setenv("WAYLAND_DISPLAY", sock.c_str(), 1);
+        }
         execl("/bin/sh", "sh", "-c", cmd, nullptr);
         _exit(1);
     }
 }
+
 void run_action(Compositor* comp, wconf::Action a, const std::string& arg) {
     using wconf::Action;
     switch (a) {
         case Action::Quit:
+            std::cout << "[comp] Quitting compositor...\n";
             wl_display_terminate(comp->display_);
             break;
         case Action::Spawn: {
-            std::string cmd = "WAYLAND_DISPLAY=spacewc-0 " + arg;
-            spawn_async(cmd.c_str());
+            std::cout << "[comp] Spawning: " << arg << " on " << comp->socket() << "\n";
+            spawn_async(arg.c_str(), comp->socket());
             break;
         }
         case Action::ToggleFullscreen:
@@ -476,6 +526,7 @@ void Compositor::onOutput(wlr_output* out) {
     if (out->width > 0 && out->height > 0) {
         output_w_ = out->width;
         output_h_ = out->height;
+        if (background_) wlr_scene_rect_set_size(background_, output_w_, output_h_);
         std::cout << "[comp] output size: " << output_w_ << "x" << output_h_ << "\n";
     }
 
@@ -489,6 +540,8 @@ void Compositor::onOutput(wlr_output* out) {
     ctx->destroy.notify = [](wl_listener* l, void*) {
         auto* ctx = reinterpret_cast<OutputCtx*>(
             reinterpret_cast<char*>(l) - offsetof(OutputCtx, destroy));
+        wl_list_remove(&ctx->frame.link);
+        wl_list_remove(&ctx->destroy.link);
         delete ctx;
     };
     wl_signal_add(&out->events.destroy, &ctx->destroy);
@@ -510,13 +563,14 @@ void Compositor::onInput(wlr_input_device* dev) {
         kbd_->ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
         if (!kbd_->ctx) { std::cerr << "[comp] xkb_context_new failed\n"; delete kbd_; kbd_ = nullptr; return; }
 
-        kbd_->keymap = xkb_keymap_new_from_names(kbd_->ctx,&(xkb_rule_names)    {
-                                                     .rules   = "   evdev",
-                                                     .model   = "pc105",
-                                                     .layout  = "us,ru",
-                                                     .variant = "",
-                                                     .options = "grp:alt_shift_toggle"
-                                                 }, XKB_KEYMAP_COMPILE_NO_FLAGS);
+        xkb_rule_names rules = {
+            .rules   = "evdev",
+            .model   = "pc105",
+            .layout  = "us,ru",
+            .variant = "",
+            .options = "grp:alt_shift_toggle"
+        };
+        kbd_->keymap = xkb_keymap_new_from_names(kbd_->ctx, &rules, XKB_KEYMAP_COMPILE_NO_FLAGS);
 
         if (!kbd_->keymap) {
             std::cerr << "[comp] xkb_keymap failed\n";
@@ -557,11 +611,25 @@ void Compositor::onToplevel(wlr_xdg_toplevel* t) {
     std::cout << "[comp] toplevel: " << (t->app_id ? t->app_id : "?") << std::endl;
 
     auto* view = viewCreate(t, &scene_->tree);
+    views_[t] = view;
 
     view->commit.notify = [](wl_listener* l, void*) {
         auto* view = reinterpret_cast<View*>(
             reinterpret_cast<char*>(l) - offsetof(View, commit));
         if (view->toplevel && view->toplevel->base->initialized) {
+            if (view->grab == View::Grab::Resize) {
+                int W = view->toplevel->base->surface->current.width;
+                int H = view->toplevel->base->surface->current.height;
+                int new_x = view->tree->node.x;
+                int new_y = view->tree->node.y;
+                if (view->resize.edges & WLR_EDGE_LEFT) {
+                    new_x = view->resize.orig_x + (view->resize.win_w - W);
+                }
+                if (view->resize.edges & WLR_EDGE_TOP) {
+                    new_y = view->resize.orig_y + (view->resize.win_h - H);
+                }
+                wlr_scene_node_set_position(&view->tree->node, new_x, new_y);
+            }
             updateViewBorders(view);
             setBorderColor(view, view->is_focused);
             wlr_xdg_toplevel_set_activated(view->toplevel, view->is_focused);
@@ -584,6 +652,38 @@ void Compositor::onToplevel(wlr_xdg_toplevel* t) {
         view->comp->viewDestroy(view);
     };
     wl_signal_add(&t->events.destroy, &view->destroy);
+
+    view->request_move.notify = [](wl_listener* l, void*) {
+        auto* view = reinterpret_cast<View*>(
+            reinterpret_cast<char*>(l) - offsetof(View, request_move));
+        auto* cur = view->comp->cursor_;
+        if (cur) {
+            view->grab = View::Grab::Move;
+            view->move.click_x = (int)cur->cursor->x;
+            view->move.click_y = (int)cur->cursor->y;
+            view->move.win_x = view->tree->node.x;
+            view->move.win_y = view->tree->node.y;
+        }
+    };
+    wl_signal_add(&t->events.request_move, &view->request_move);
+
+    view->request_resize.notify = [](wl_listener* l, void* data) {
+        auto* view = reinterpret_cast<View*>(
+            reinterpret_cast<char*>(l) - offsetof(View, request_resize));
+        auto* ev = static_cast<wlr_xdg_toplevel_resize_event*>(data);
+        auto* cur = view->comp->cursor_;
+        if (cur) {
+            view->grab = View::Grab::Resize;
+            view->resize.click_x = (int)cur->cursor->x;
+            view->resize.click_y = (int)cur->cursor->y;
+            view->resize.orig_x = view->tree->node.x;
+            view->resize.orig_y = view->tree->node.y;
+            view->resize.win_w = view->surface->surface->current.width;
+            view->resize.win_h = view->surface->surface->current.height;
+            view->resize.edges = ev->edges;
+        }
+    };
+    wl_signal_add(&t->events.request_resize, &view->request_resize);
 
     view->request_fullscreen.notify = [](wl_listener* l, void* data) {
         auto* view = reinterpret_cast<View*>(
@@ -632,12 +732,38 @@ void cbKeyboardKey(wl_listener* l, void* data) {
 
     if (comp && ev->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
         uint32_t mods = wlr_keyboard_get_modifiers(kbd->wlr_kb);
+        uint32_t clean_mods = mods & (wconf::get().keys.mod_logo |
+                                      wconf::get().keys.mod_alt  |
+                                      wconf::get().keys.mod_shift |
+                                      wconf::get().keys.mod_ctrl);
+
+        const xkb_keysym_t* syms = nullptr;
+        int num_syms = xkb_state_key_get_syms(kbd->state, keycode, &syms);
+
+        bool handled = false;
         for (auto& b : wconf::get().binds.list) {
-            if (b.mods == mods && b.key == keycode) {
+            if (b.mods != clean_mods) continue;
+
+            bool match = (b.key != 0 && b.key == keycode);
+            if (!match && b.keysym != 0 && syms) {
+                for (int i = 0; i < num_syms; ++i) {
+                    if (syms[i] == b.keysym) {
+                        match = true;
+                        break;
+                    }
+                }
+            }
+
+            if (match) {
                 std::string arg = b.arg.empty() ? wconf::get().terminal : b.arg;
                 run_action(comp, b.action, arg);
+                handled = true;
                 break;
             }
+        }
+
+        if (handled) {
+            return;
         }
     }
 
